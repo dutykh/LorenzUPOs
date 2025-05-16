@@ -222,10 +222,10 @@ def cost(u_vec, lambda_=DEFAULT_LAMBDA, eps=DEFAULT_EPS, t_min=0.0):
     return total_cost  # Return the total cost to be minimized
 
 def initial_guess_po(
-    T_final=400.0,
-    n_steps=40000,
-    t_min=3.0,  # Minimum time separation
-    t_max=6.0,  # Maximum time separation
+    T_final=2000.0,
+    n_steps=400000,
+    t_min=4.0,  # Minimum time separation
+    t_max=8.0,  # Maximum time separation
     x_bounds=(-20, 20),
     y_bounds=(-30, 30),
     z_bounds=(0, 50),
@@ -388,96 +388,140 @@ def initial_guess_po(
 
 def main(args):
     """
-    Main optimization routine for finding Unstable Periodic Orbits (UPOs).
+    Main optimization routine for finding Unstable Periodic Orbits (UPOs) in the Lorenz system.
+    
+    This function sets up and runs the optimization process to find periodic solutions to the
+    Lorenz system using the L-BFGS optimization algorithm. It handles the parameterization of
+    the period, initializes the optimization variables, and sets up tracking for the optimization
+    progress.
     
     Args:
-        args: Command-line arguments
+        args: Command-line arguments containing optimization parameters such as
+              max_iter (maximum iterations), rtol (relative tolerance), and atol (absolute tolerance).
     """
+    # Record start time to measure total execution time
     start_time = time.time()
     
-    # Get initial guess
+    # Step 1: Generate initial guess for the periodic orbit
+    # This includes initial position (x0, y0, z0) and an estimated period T0
     guess = initial_guess_po()
     
-    # Convert initial period to log(T - t_min) parameterization
-    t_min = 1.0  # Minimum period constraint
-    T_initial = guess['T0']
-    logT_init = torch.log(torch.tensor(T_initial - t_min + 1e-12))  # Add small offset for numerical stability
+    # Step 2: Parameterize the period T to ensure it remains positive during optimization
+    # We use the transformation T = t_min + exp(logT) where t_min is the minimum allowed period
+    # This ensures T > t_min for any real value of logT
+    t_min = 1.0  # Minimum period constraint (avoids numerical issues with very small periods)
+    T_initial = guess['T0']  # Initial period estimate from the guess
     
-    # Initial guess vector [x0, y0, z0, log(T - t_min)]
+    # Convert initial period to log-space with numerical stability offset
+    # The small offset (1e-12) prevents log(0) if T_initial = t_min
+    logT_init = torch.log(torch.tensor(T_initial - t_min + 1e-12))
+    
+    # Create the initial parameter vector: [x0, y0, z0, log(T - t_min)]
+    # We use requires_grad=True to enable automatic differentiation
     u_init = torch.tensor([guess['x0'], guess['y0'], guess['z0'], logT_init], 
                          dtype=torch.float64, requires_grad=True)
     
+    # Print initial guess information for user feedback
     print(f"Initial guess: x0 = {u_init[0]:.6f}, y0 = {u_init[1]:.6f}, "
           f"z0 = {u_init[2]:.6f}, T = {T_initial:.6f}")
     print(f"Using parameterization: T = {t_min} + exp(logT) ensures T > {t_min}")
     
-    # Main optimization with L-BFGS
+    # Step 3: Set up the L-BFGS optimization
     print("\nStarting L-BFGS optimization...")
+    
+    # Create a copy of initial parameters that will be updated during optimization
     u_vec = u_init.clone().detach().requires_grad_(True)
     
-    # Set up L-BFGS optimizer
+    # Configure the L-BFGS optimizer with the following parameters:
+    # - max_iter: Maximum number of iterations per optimization step
+    # - tolerance_grad: Termination tolerance on the gradient norm
+    # - tolerance_change: Termination tolerance on function value/parameter changes
+    # - history_size: Update history size (affects memory usage and convergence)
+    # - line_search_fn: Line search algorithm ('strong_wolfe' is robust for this problem)
     lbfgs = torch.optim.LBFGS([u_vec], 
                             max_iter=args.max_iter,
-                            tolerance_grad=1e-12,
-                            tolerance_change=1e-12,
-                            history_size=25,
-                            line_search_fn='strong_wolfe')
+                            tolerance_grad=1e-12,     # Very tight tolerance for precise solutions
+                            tolerance_change=1e-12,   # Very tight tolerance for precise solutions
+                            history_size=25,          # Number of past updates to store
+                            line_search_fn='strong_wolfe')  # Robust line search method
     
-    # Track optimization progress
-    iteration = 0
-    prev_cost = float('inf')
-    converged = False
-    best_iter = 0
-    best_cost = float('inf')
-    best_state = u_vec.detach().clone()
+    # Step 4: Initialize variables to track optimization progress
+    iteration = 0               # Current iteration counter
+    prev_cost = float('inf')    # Cost from previous iteration (for convergence check)
+    converged = False          # Flag to track if convergence was achieved
+    best_iter = 0              # Iteration number with the best solution found
+    best_cost = float('inf')   # Best (lowest) cost found so far
+    best_state = u_vec.detach().clone()  # Best parameter values found so far
     
-    # Initialize history
+    # Initialize history dictionary to store optimization metrics at each iteration
+    # This is useful for analysis and visualization after optimization completes
     history = {
-        'iter': [],
-        'cost': [],
-        'period': [],
-        'residual_norm': [],
-        'grad_norm': []
+        'iter': [],         # Iteration numbers
+        'cost': [],          # Cost function values
+        'period': [],        # Period values
+        'residual_norm': [], # Norm of the periodicity residual
+        'grad_norm': []      # Norm of the gradient
     }
     
     def closure():
+        """
+        Closure function for L-BFGS optimization that computes the loss, performs backpropagation,
+        and tracks optimization progress.
+        
+        This function is called multiple times by the L-BFGS optimizer. It:
+        1. Computes the loss (cost) for the current parameters
+        2. Performs backpropagation to compute gradients
+        3. Tracks optimization metrics and convergence
+        4. Implements early stopping criteria
+        5. Maintains the best solution found
+        
+        Returns:
+            torch.Tensor: The computed cost value
+        """
+        # Access and potentially modify these variables from the outer scope
         nonlocal iteration, prev_cost, converged, best_iter, best_cost, best_state
         
+        # Clear any previously computed gradients
         lbfgs.zero_grad()
         
-        # Compute cost with current parameters
+        # Compute the cost (objective function) with current parameters
+        # The cost measures how well the current solution satisfies the periodicity condition
         current_cost = cost(u_vec, lambda_=args.lambda_, t_min=t_min)
         
-        # Backpropagate gradients
+        # Backpropagate to compute gradients of the cost w.r.t. parameters
+        # This populates the .grad attribute of u_vec
         current_cost.backward()
         
+        # The following operations don't require gradient computation
         with torch.no_grad():
-            # Get current state and cost
-            current_pos = u_vec[:3]
+            # Extract current position (first 3 elements) and period (4th element)
+            current_pos = u_vec[:3]  # [x, y, z] coordinates
+            # Convert parameterized period back to actual period: T = t_min + exp(logT)
             current_T = t_min + torch.exp(u_vec[3]).item()
-            cost_value = current_cost.item()
+            cost_value = current_cost.item()  # Get Python scalar from tensor
             
-            # Compute residual norm (periodicity condition)
+            # Compute how well the periodicity condition is satisfied
+            # This is the norm of the difference between initial and final state after one period
             xT = flow_map(current_pos, torch.tensor(current_T))
             residual = (xT - current_pos).norm().item()
             
-            # Compute gradient norm
+            # Compute the norm of the gradient (useful for monitoring convergence)
             grad_norm = u_vec.grad.norm().item() if u_vec.grad is not None else 0.0
             
-            # Track best solution
+            # Track the best solution found so far based on cost value
             if cost_value < best_cost:
                 best_cost = cost_value
-                best_state = u_vec.detach().clone()
+                best_state = u_vec.detach().clone()  # Store a copy of the best parameters
                 best_iter = iteration
             
-            # Save history
-            history['iter'].append(iteration)
-            history['cost'].append(cost_value)
-            history['period'].append(current_T)
-            history['residual_norm'].append(residual)
-            history['grad_norm'].append(grad_norm)
+            # Save optimization history for analysis and visualization
+            history['iter'].append(iteration)               # Current iteration number
+            history['cost'].append(cost_value)              # Current cost value
+            history['period'].append(current_T)             # Current period estimate
+            history['residual_norm'].append(residual)       # Periodicity condition residual
+            history['grad_norm'].append(grad_norm)          # Gradient magnitude
             
-            # Print progress every 5 iterations, first iteration, or on convergence
+            # Print progress at regular intervals and on important events
             if iteration % 5 == 0 or iteration == 0 or converged or iteration == args.max_iter - 1:
                 if iteration % 5 == 0 or iteration == 0:
                     print(f"\n--- Iteration {iteration} ---")
@@ -487,27 +531,36 @@ def main(args):
                     print(f"Residual norm: {residual:.6e}")
                     print(f"Gradient norm: {grad_norm:.6e}")
             
-            # Check for convergence (relative cost change)
+            # Check for convergence based on relative change in cost
+            # Stop if the relative change in cost is smaller than the tolerance
             if iteration > 0 and abs(prev_cost - cost_value) < args.tol * (1 + abs(prev_cost)):
-                if not converged:  # Only print convergence message once
+                if not converged:  # Only print the convergence message once
                     print(f"\nConverged after {iteration} iterations (relative cost change < {args.tol})")
                     print(f"Final cost: {cost_value:.6e}, Final period: {current_T:.8f}")
                 converged = True
             
-            # Early stopping if no improvement for 50 iterations
+            # Early stopping if no improvement for 50 consecutive iterations
+            # This prevents wasting computation when progress has stalled
             if iteration - best_iter > 50 and iteration > 100 and not converged:
                 print(f"\nEarly stopping: No improvement for 50 iterations")
                 converged = True
             
+            # Update tracking variables for next iteration
             prev_cost = cost_value
             iteration += 1
             
-            if cost_value < 1e-10:  # Convergence threshold
+            # Additional convergence check for very small cost values
+            if cost_value < 1e-10:  # Hard threshold for numerical precision
                 converged = True
         
+        # Return the computed cost value to the optimizer
         return current_cost
     
-    # Run optimization with enhanced monitoring
+    # ======================================================================
+    # OPTIMIZATION EXECUTION AND MONITORING
+    # ======================================================================
+    
+    # Print header with optimization parameters
     print("\n" + "="*50)
     print("STARTING OPTIMIZATION")
     print("="*50)
@@ -515,56 +568,88 @@ def main(args):
     print(f"Convergence tolerance: {args.tol:.1e}")
     print("="*50 + "\n")
     
+    # Record start time for performance measurement
     start_time = time.time()
     
-    # Initial evaluation
-    with torch.no_grad():
+    # ----------------------------------------------------------------------
+    # Initial evaluation before starting optimization
+    # ----------------------------------------------------------------------
+    with torch.no_grad():  # Disable gradient calculation for evaluation
+        # Compute initial cost and period estimate
+        # The cost function evaluates how well the current state satisfies the periodicity condition
         initial_cost = cost(u_vec, lambda_=args.lambda_, t_min=t_min).item()
+        
+        # Convert from log-space to actual period (u_vec[3] stores log(T - t_min))
         initial_T = t_min + torch.exp(u_vec[3]).item()
+        
+        # Display initial conditions
         print(f"Initial cost: {initial_cost:.6e}, Initial period: {initial_T:.6f}")
         
-        # Save initial state to history
-        history['iter'].append(0)
-        history['cost'].append(initial_cost)
-        history['period'].append(initial_T)
-        history['residual_norm'].append(float('nan'))
-        history['grad_norm'].append(float('nan'))
+        # Initialize history tracking with starting point
+        # This will be used for monitoring convergence and generating plots
+        history['iter'].append(0)                       # Iteration counter
+        history['cost'].append(initial_cost)            # Initial cost value
+        history['period'].append(initial_T)             # Initial period estimate
+        history['residual_norm'].append(float('nan'))   # Will be updated during optimization
+        history['grad_norm'].append(float('nan'))       # Will be updated during optimization
     
+    # ----------------------------------------------------------------------
+    # Main optimization loop (handled by L-BFGS)
+    # ----------------------------------------------------------------------
     try:
-        # Run the optimization
+        # Execute the L-BFGS optimization algorithm
+        # The closure() function will be called multiple times by the optimizer
+        # to compute the objective function and its gradients
         lbfgs.step(closure)
         
-        # Final evaluation if not already converged
+        # If we reach here without convergence, perform final evaluation
         if not converged:
             with torch.no_grad():
-                current_pos = u_vec[:3]
-                current_T = t_min + torch.exp(u_vec[3]).item()
+                # Get current state and period
+                current_pos = u_vec[:3]  # Current position in state space [x, y, z]
+                current_T = t_min + torch.exp(u_vec[3]).item()  # Current period estimate
+                
+                # Compute current cost
                 current_cost = cost(u_vec, lambda_=args.lambda_, t_min=t_min).item()
                 
-                # Save final state if it's better
+                # Update best solution if current is better
+                # This ensures we always keep track of the best solution found
                 if current_cost < best_cost:
                     best_cost = current_cost
-                    best_state = u_vec.detach().clone()
+                    best_state = u_vec.detach().clone()  # Create a detached copy
                     
                 print("\nOptimization finished without explicit convergence.")
     
+    # Handle user interruption (Ctrl+C)
     except KeyboardInterrupt:
         print("\nOptimization interrupted by user.")
+    # Handle any other exceptions during optimization
     except Exception as e:
         print(f"\nError during optimization: {str(e)}")
         print("Returning best solution found so far...")
     
-    # Use the best state found during optimization
-    final_pos = best_state[:3]
-    final_T = t_min + torch.exp(best_state[3]).item()
-    final_cost = best_cost
+    # ======================================================================
+    # POST-OPTIMIZATION PROCESSING
+    # ======================================================================
     
-    # Compute final residual
+    # Extract the best solution found during optimization
+    final_pos = best_state[:3]  # Final position [x, y, z] in state space
+    final_T = t_min + torch.exp(best_state[3]).item()  # Final period estimate
+    final_cost = best_cost  # Final cost value
+    
+    # Compute the final residual (how well the periodicity condition is satisfied)
     with torch.no_grad():
+        # Integrate the system for one period starting from final_pos
         xT = flow_map(final_pos, torch.tensor(final_T))
+        # Calculate the norm of the difference between initial and final states
+        # This measures how close we are to a perfect periodic orbit
         final_residual = (xT - final_pos).norm().item()
     
-    # Print final results
+    # ======================================================================
+    # FINAL RESULTS REPORTING
+    # ======================================================================
+    
+    # Display comprehensive optimization results
     print("\n" + "="*50)
     print("OPTIMIZATION FINISHED")
     print("="*50)
@@ -577,80 +662,119 @@ def main(args):
     print(f"Best iteration: {best_iter}")
     print("="*50 + "\n")
     
-    # Verify periodicity of final solution
+    # ======================================================================
+    # VERIFICATION OF PERIODIC SOLUTION
+    # ======================================================================
+    
+    # Verify periodicity by checking if the solution returns to its starting point after one period
     with torch.no_grad():
+        # Integrate the system for one period starting from final_pos
         xT = flow_map(final_pos, torch.tensor(final_T))
+        # Calculate the residual (difference between initial and final states)
         residual = (xT - final_pos).norm().item()
         print(f"Final residual norm: {final_residual:.6e}")
     
-    # Verify the solution by integrating for 3 periods before plotting
+    # ======================================================================
+    # LONG-TERM INTEGRATION FOR VERIFICATION
+    # ======================================================================
+    
+    # Print section header
     print("\n" + "="*50)
     print("VERIFYING PERIODIC SOLUTION")
     print("="*50)
     
-    # Create time points for 3 periods with high resolution
-    t_verify = torch.linspace(0, 3 * final_T, 3000)
+    # Create a high-resolution time grid for 3 periods of the orbit
+    # This will be used to verify the periodicity over multiple cycles
+    t_verify = torch.linspace(0, 3 * final_T, 3000)  # 3000 points for smooth plotting
     
-    # Integrate the system
+    # Integrate the system for 3 periods to verify periodicity
     with torch.no_grad():
+        # Use the Dormand-Prince (dopri5) adaptive step-size integrator
         traj = odeint(lorenz_rhs, final_pos, t_verify, 
                      method='dopri5', rtol=args.rtol, atol=args.atol)
     
-    # Convert to numpy for easier manipulation
-    traj_np = traj.numpy()
-    t_verify_np = t_verify.numpy()
+    # Convert results to NumPy arrays for easier manipulation
+    traj_np = traj.numpy()       # Trajectory points [time, xyz]
+    t_verify_np = t_verify.numpy()  # Time points
     
-    # Find the state at T, 2T, and 3T using interpolation
+    # ======================================================================
+    # PERIODICITY CHECK AT MULTIPLE PERIODS
+    # ======================================================================
+    
+    # We'll check how well the solution repeats at T, 2T, and 3T
     T = final_T
-    times = [T, 2*T, 3*T]
-    states = []
+    times = [T, 2*T, 3*T]  # Times to check periodicity
+    states = []  # Will store the state at each multiple of T
     
+    # For each time point of interest, find the corresponding state using interpolation
     for t in times:
-        # Find the index where we should insert t in t_verify_np
+        # Find where t would be inserted in the time array to maintain order
         idx = np.searchsorted(t_verify_np, t)
+        
+        # Handle edge cases (shouldn't normally happen with our time grid)
         if idx == 0 or idx == len(t_verify_np):
             states.append(traj_np[idx-1])
             continue
             
-        # Linear interpolation
+        # Perform linear interpolation between the two nearest time points
+        # alpha is the fractional distance between idx-1 and idx
         alpha = (t - t_verify_np[idx-1]) / (t_verify_np[idx] - t_verify_np[idx-1])
+        # Linearly interpolate the state at time t
         state = traj_np[idx-1] + alpha * (traj_np[idx] - traj_np[idx-1])
         states.append(state)
     
-    # Calculate errors at each period
+    # ======================================================================
+    # PERIODICITY ERROR ANALYSIS
+    # ======================================================================
+    
+    # Print header for the periodicity verification table
     print("\nVerification of periodicity:")
     print("-" * 90)
-    print(f"{'Cycle':<10} | {'Time':<12} | {'Error (norm)':<15} | {'x-Error':<15} | {'y-Error':<15} | {'z-Error':<15}")
+    print(f"{'Cycle':<10} | {'Time':<12} | {'Error (norm)':<15} | "
+          f"{'x-Error':<15} | {'y-Error':<15} | {'z-Error':<15}")
     print("-" * 90)
     
-    # Get the optimized periodic orbit's initial state
-    x0 = final_pos.numpy()  # This is the periodic orbit found by the optimizer
+    # Get the initial state for comparison (the optimized periodic orbit)
+    x0 = final_pos.numpy()
     
+    # Calculate and display errors at each period multiple
     for i, (t, state) in enumerate(zip(times, states)):
-        # Calculate error between state after i+1 periods and the initial state
-        # For a perfect periodic orbit, this should be close to zero
+        # Calculate the difference between current state and initial state
+        # For a perfect periodic orbit, this difference would be zero
         error = state - x0
-        error_norm = np.linalg.norm(error)
+        error_norm = np.linalg.norm(error)  # Overall error magnitude
         
+        # Print a formatted row with error information
         print(f"{i+1}T{' '*(9-len(str(i+1)))} | {t:<12.6f} | {error_norm:<15.6e} | "
               f"{error[0]:<15.6e} | {error[1]:<15.6e} | {error[2]:<15.6e}")
     
-    # Final verification after 3 periods
-    final_state = states[-1]  # State after 3 periods
-    final_error = final_state - x0  # Compare with initial state of periodic orbit
-    final_error_norm = np.linalg.norm(final_error)
+    # ======================================================================
+    # FINAL VERIFICATION SUMMARY
+    # ======================================================================
     
+    # Check the final state after 3 periods
+    final_state = states[-1]  # State after 3 periods
+    final_error = final_state - x0  # Difference from initial state
+    final_error_norm = np.linalg.norm(final_error)  # Magnitude of final error
+    
+    # Print summary of final verification
     print("\nFinal verification after 3 periods:")
     print(f"Initial state: {final_pos.numpy()}")
     print(f"Final state:   {final_state}")
     print(f"Error norm:    {final_error_norm:.6e}")
     
-    # Store the trajectory for plotting
-    traj_3T = traj_np
-    t_3T = t_verify_np
+    # Store the full trajectory for plotting
+    traj_3T = traj_np      # Full trajectory points
+    t_3T = t_verify_np     # Corresponding time points
     
-    # Final timing
+    # ======================================================================
+    # FINAL RESULTS SUMMARY
+    # ======================================================================
+    
+    # Calculate total execution time
     elapsed_time = time.time() - start_time
+    
+    # Print comprehensive final results
     print("\n" + "="*50)
     print("FINAL RESULTS")
     print("="*50)
@@ -660,138 +784,302 @@ def main(args):
     print(f"CPU time: {elapsed_time:.2f} seconds")
     print("="*50)
     
-    # Now generate the plots after verification is complete
+    # ======================================================================
+    # VISUALIZATION OF RESULTS
+    # ======================================================================
+    # This section handles the generation of visualizations to help understand
+    # the found periodic orbit and the optimization process.
+    
     try:
+        # Import required plotting libraries
         import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
+        from mpl_toolkits.mplot3d import Axes3D  # Required for 3D plotting
         
-        # Create a 3D plot of the attractor and the periodic orbit
+        # ==================================================================
+        # 3D PLOT: LORENZ ATTRACTOR AND PERIODIC ORBIT
+        # ==================================================================
         print("\nGenerating visualization...")
+        
+        # Create a new figure with specified size
         fig = plt.figure(figsize=(12, 8))
+        # Add a 3D subplot
         ax = fig.add_subplot(111, projection='3d')
         
-        # Plot a portion of the Lorenz attractor for context (in gray)
+        # ------------------------------------------------------------------
+        # Plot the background Lorenz attractor for context
+        # ------------------------------------------------------------------
         print("  - Plotting attractor...")
+        # Generate a long trajectory to show the full attractor
+        # We skip the first 1000 points to remove transient behavior
         attractor_traj = odeint(lorenz_rhs, final_pos, torch.linspace(0, 100, 10000), 
                               method='dopri5', rtol=args.rtol, atol=args.atol).detach().numpy()
+        # Plot the attractor in gray with transparency
         ax.plot(attractor_traj[1000:, 0], attractor_traj[1000:, 1], attractor_traj[1000:, 2], 
                'gray', alpha=0.4, linewidth=0.8, label='Lorenz attractor')
         
-        # Plot unstable periodic orbit (in red, one period only)
+        # ------------------------------------------------------------------
+        # Plot the found unstable periodic orbit (UPO)
+        # ------------------------------------------------------------------
         print("  - Plotting periodic orbit...")
-        t_po = torch.linspace(0, final_T, 1000)
+        # Generate points for exactly one period of the orbit
+        t_po = torch.linspace(0, final_T, 1000)  # High resolution for smooth curve
         po_traj = odeint(lorenz_rhs, final_pos, t_po, 
                         method='dopri5', rtol=args.rtol, atol=args.atol).detach().numpy()
+        # Plot the periodic orbit in red with a thicker line
         ax.plot(po_traj[:, 0], po_traj[:, 1], po_traj[:, 2], 'red', 
                linewidth=3, label=f'Unstable Periodic Orbit (T={final_T:.6f})')
-            
-        # Mark the initial point
+        
+        # Mark the initial point of the orbit
         ax.scatter(*final_pos.detach().numpy(), color='red', s=100, 
                  marker='o', edgecolor='black', label='Initial point')
         
+        # ------------------------------------------------------------------
+        # Configure plot appearance
+        # ------------------------------------------------------------------
         ax.set_xlabel('X', fontsize=12)
         ax.set_ylabel('Y', fontsize=12)
         ax.set_zlabel('Z', fontsize=12)
         ax.set_title('Lorenz System: Unstable Periodic Orbit (UPO) on Strange Attractor', 
                     fontsize=14)
         ax.legend(fontsize=11)
-        ax.view_init(elev=20, azim=135)
-        plt.tight_layout()
+        ax.view_init(elev=20, azim=135)  # Set 3D viewing angle
+        plt.tight_layout()  # Adjust layout to prevent label cutoff
         
-        # Save the figure
+        # ==================================================================
+        # SAVE THE 3D PLOT
+        # ==================================================================
+        # Create images directory if it doesn't exist
         os.makedirs('images', exist_ok=True)
+        
+        # Generate a unique filename to prevent overwriting
         base_name = 'lorenz_periodic_orbit'
         file_ext = '.png'
         counter = 1
         output_file = f'images/{base_name}{file_ext}'
         
+        # If file exists, append a number to the filename
         while os.path.exists(output_file):
             output_file = f'images/{base_name}_{counter}{file_ext}'
             counter += 1
             
+        # Save the figure with high resolution
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"\nPlot saved as '{output_file}'")
         
-        # Plot optimization history
+        # ==================================================================
+        # OPTIMIZATION HISTORY PLOT
+        # ==================================================================
         print("  - Plotting optimization history...")
+        
+        # Create a figure with two subplots (stacked vertically)
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
         
-        # Plot cost and residual
+        # ------------------------------------------------------------------
+        # Subplot 1: Cost and Residual Norm
+        # ------------------------------------------------------------------
+        # Plot cost (blue solid line) on left y-axis (log scale)
         ax1.semilogy(history['iter'], history['cost'], 'b-', label='Cost')
+        # Plot residual norm (red dashed line) on same y-axis
         ax1.semilogy(history['iter'], history['residual_norm'], 'r--', label='Residual norm')
         ax1.set_xlabel('Iteration')
         ax1.set_ylabel('Value (log scale)')
         ax1.legend()
-        ax1.grid(True, which='both', alpha=0.3)
+        ax1.grid(True, which='both', alpha=0.3)  # Add grid for better readability
         
-        # Plot period and gradient norm
+        # ------------------------------------------------------------------
+        # Subplot 2: Period and Gradient Norm
+        # ------------------------------------------------------------------
+        # Create a second y-axis that shares the same x-axis
         ax2_twin = ax2.twinx()
+        
+        # Plot period (green solid line) on left y-axis (linear scale)
         ax2.plot(history['iter'], history['period'], 'g-', label='Period')
+        # Plot gradient norm (magenta dashed line) on right y-axis (log scale)
         ax2_twin.semilogy(history['iter'], history['grad_norm'], 'm--', label='Gradient norm')
+        
+        # Configure axes labels and colors
         ax2.set_xlabel('Iteration')
         ax2.set_ylabel('Period', color='g')
         ax2_twin.set_ylabel('Gradient norm', color='m')
         
-        # Add legends
+        # Combine legends from both y-axes
         lines1, labels1 = ax2.get_legend_handles_labels()
         lines2, labels2 = ax2_twin.get_legend_handles_labels()
         ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
         
+        # Add grid to the second subplot
         ax2.grid(True, which='both', alpha=0.3)
-        plt.tight_layout()
+        plt.tight_layout()  # Adjust layout to prevent label cutoff
         
-        # Save the optimization history plot
+        # ==================================================================
+        # SAVE THE OPTIMIZATION HISTORY PLOT
+        # ==================================================================        # Save the optimization history plot with a unique filename
+        counter = 1
         history_file = f'images/{base_name}_history.png'
+        
+        # If file exists, append a number to the filename
+        while os.path.exists(history_file):
+            history_file = f'images/{base_name}_history_{counter}.png'
+            counter += 1
+            
         plt.savefig(history_file, dpi=150, bbox_inches='tight')
         print(f"Optimization history plot saved as '{history_file}'")
         
-        # Show the plots
+        # Display all plots
         plt.show()
         
+    # Handle missing matplotlib installation
     except ImportError as e:
         print(f"\nWarning: Could not generate plots - {str(e)}")
         print("Make sure you have matplotlib installed: pip install matplotlib")
+    # Handle any other plotting errors
     except Exception as e:
         print(f"\nWarning: Error generating plots - {str(e)}")
     
+    # Return all relevant results
     return final_pos, final_T, final_cost, history, traj_3T, t_3T
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Find Unstable Periodic Orbits (UPOs) of the Lorenz system')
+    """
+    Main entry point of the script when executed directly.
+    Sets up command-line argument parsing and runs the main optimization routine.
+    """
+    # Initialize the argument parser with a description of the script's purpose
+    parser = argparse.ArgumentParser(
+        description='Find Unstable Periodic Orbits (UPOs) of the Lorenz system.\n\n'
+                    'This script uses numerical optimization to find periodic solutions\n'
+                    'to the Lorenz system of differential equations.',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # ======================================================================
+    # COMMAND-LINE ARGUMENTS
+    # ======================================================================
+    
+    # ODE Solver Tolerances
     parser.add_argument('--rtol', type=float, default=DEFAULT_RTOL,
-                        help='Relative tolerance for ODE solver')
+                      help='Relative tolerance for the ODE solver. Controls the relative error '
+                           'tolerance for the numerical integration. Smaller values increase '
+                           'accuracy but may slow down computation. (default: %(default).1e)')
+    
     parser.add_argument('--atol', type=float, default=DEFAULT_ATOL,
-                        help='Absolute tolerance for ODE solver')
+                      help='Absolute tolerance for the ODE solver. Controls the absolute error '
+                           'tolerance. Should be set relative to the scale of the solution. '
+                           '(default: %(default).1e)')
+    
+    # Optimization Parameters
     parser.add_argument('--lambda', dest='lambda_', type=float, default=DEFAULT_LAMBDA,
-                        help='Penalty weight for avoiding equilibria')
+                      help='Penalty weight for the equilibrium avoidance term in the cost function. '
+                           'Higher values make the optimizer more aggressive at avoiding equilibrium '
+                           'points. (default: %(default).1e)')
+    
     parser.add_argument('--max-iter', type=int, default=DEFAULT_MAX_ITER,
-                        help='Maximum number of L-BFGS iterations')
+                      help='Maximum number of L-BFGS optimization iterations. The optimizer will '
+                           'stop after this many iterations even if convergence is not achieved. '
+                           '(default: %(default)d)')
+    
     parser.add_argument('--tol', type=float, default=DEFAULT_TOL,
-                        help=f'Convergence tolerance for optimization (default: {DEFAULT_TOL})')
+                      help=f'Convergence tolerance for the optimization process. The optimization '
+                           f'stops when the relative change in the cost function falls below this '
+                           f'value. (default: {DEFAULT_TOL:.1e})')
+    
+    # Parse command-line arguments
     args = parser.parse_args()
     
-    # Update global tolerances
+    # ======================================================================
+    # UPDATE GLOBAL PARAMETERS
+    # ======================================================================
+    # Update global tolerance parameters based on command-line arguments
+    # These will be used throughout the script for ODE integration
     DEFAULT_RTOL = args.rtol
     DEFAULT_ATOL = args.atol
     
+    # ======================================================================
+    # EXECUTE MAIN OPTIMIZATION ROUTINE
+    # ======================================================================
+    # Call the main function with the parsed arguments
     main(args)
 
-# README
+# =============================================================================
+# DOCUMENTATION
+# =============================================================================
 """
-Usage: python lorenz_periodic_orbit.py [options]
+Lorenz System: Unstable Periodic Orbit (UPO) Finder
+==================================================
 
-This script finds Unstable Periodic Orbits (UPOs) of the Lorenz system by minimizing a differentiable
-cost function using automatic differentiation.
+Author: Dr. Denys Dutykh (Khalifa University of Science and Technology, Abu Dhabi, UAE)
+Date:   May 2024
 
-Options:
-  --rtol        Relative tolerance for ODE integration (default: DEFAULT_RTOL=1e-9)
-  --atol        Absolute tolerance for ODE integration (default: DEFAULT_ATOL=1e-9)
-  --lambda      Penalty weight for avoiding equilibria (default: DEFAULT_LAMBDA=1e-3)
-  --max-iter    Maximum L-BFGS iterations (default: DEFAULT_MAX_ITER=300)
+This script implements a numerical method to find Unstable Periodic Orbits (UPOs)
+in the Lorenz system using gradient-based optimization with automatic differentiation.
+The code uses PyTorch for efficient computation and automatic differentiation.
 
-Example:
-  python lorenz_periodic_orbit.py --lambda 0.001 --max-iter 500
+## Features
+- Finds periodic orbits by minimizing a differentiable cost function
+- Uses L-BFGS optimization with automatic differentiation
+- Implements equilibrium point avoidance
+- Provides comprehensive visualization of results
+- Includes verification of periodicity
+- Supports customizable solver tolerances and optimization parameters
 
-The initial_guess_po() function uses k-d tree nearest neighbor search to find
-good initial guesses for Unstable Periodic Orbits (UPOs).
+## Methodology
+1. **Initial Guess Generation**: Uses k-d tree nearest neighbor search to find
+   good initial guesses for periodic orbits from a chaotic trajectory.
+2. **Optimization**: Minimizes a cost function that measures the distance
+   between initial and final states after one period, while avoiding equilibria.
+3. **Verification**: Verifies periodicity by integrating the solution for
+   multiple periods and checking return accuracy.
+4. **Visualization**: Generates 3D plots of the periodic orbit on the Lorenz
+   attractor and optimization history plots.
+
+## Command-Line Options
+  --rtol FLOAT     Relative tolerance for ODE solver (default: 1e-9)
+                   Controls relative error tolerance in numerical integration.
+                   Smaller values increase accuracy but slow computation.
+                   
+  --atol FLOAT     Absolute tolerance for ODE solver (default: 1e-9)
+                   Controls absolute error tolerance in numerical integration.
+                   Should be set relative to the solution scale.
+                   
+  --lambda FLOAT   Penalty weight for equilibrium avoidance (default: 1e-3)
+                   Higher values make the optimizer avoid equilibrium points
+                   more aggressively.
+                   
+  --max-iter INT   Maximum number of L-BFGS iterations (default: 300)
+                   The optimizer will stop after this many iterations
+                   even if convergence is not achieved.
+                   
+  --tol FLOAT      Convergence tolerance for optimization (default: 1e-5)
+                   Optimization stops when the relative change in the
+                   cost function falls below this value.
+
+## Example Usage
+```bash
+# Basic usage with default parameters
+python lorenz_periodic_orbit.py
+
+# Customize optimization parameters
+python lorenz_periodic_orbit.py --lambda 0.001 --max-iter 500 --tol 1e-6
+
+# Increase solver accuracy (useful for more complex orbits)
+python lorenz_periodic_orbit.py --rtol 1e-10 --atol 1e-10
+```
+
+## Output
+- Saves 3D visualization of the periodic orbit as 'lorenz_periodic_orbit.png'
+- Saves optimization history plot as 'lorenz_periodic_orbit_history.png'
+- Prints detailed convergence and verification information to console
+
+## Dependencies
+- Python 3.6+
+- PyTorch
+- NumPy
+- SciPy
+- Matplotlib (for visualization)
+
+## References
+- Lorenz, E. N. (1963). Deterministic nonperiodic flow. Journal of the atmospheric
+  sciences, 20(2), 130-141.
+- Viswanath, D. (2003). The fractal property of the Lorenz attractor.
+  Physica D: Nonlinear Phenomena, 190(1-2), 115-128.
 """
