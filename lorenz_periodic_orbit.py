@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Periodic orbit finder for the Lorenz system using automatic differentiation.
+Unstable Periodic Orbit (UPO) finder for the Lorenz system using automatic differentiation.
 
-This script locates periodic orbits of the Lorenz system by minimizing a differentiable
-objective function with an automatic-differentiation-based optimizer.
+This script locates Unstable Periodic Orbits (UPOs) of the Lorenz system by minimizing a
+differentiable objective function with an automatic-differentiation-based optimizer.
+UPOs are fundamental to understanding the chaotic dynamics of the Lorenz attractor.
 
 Author: Dr. Denys Dutykh
         Khalifa University of Science and Technology
@@ -82,7 +83,7 @@ def flow_map(x0_vec, logT, t_min=1.0):
 
 def cost(u_vec, lambda_=DEFAULT_LAMBDA, eps=DEFAULT_EPS, t_min=1.0):
     """
-    Cost function for periodic orbit optimization.
+    Cost function for unstable periodic orbit (UPO) optimization.
     
     The cost consists of:
     1. Periodicity residual: ||flow(T) - initial_state||²
@@ -123,7 +124,7 @@ def initial_guess_po(
     seed=None
 ):
     """
-    Generate a heuristic initial guess for a periodic orbit (PO) of the Lorenz system.
+    Generate a heuristic initial guess for an Unstable Periodic Orbit (UPO) of the Lorenz system.
     Uses k-d tree for efficient nearest neighbor search.
     Returns a dict with:
       'T0': time lag between twin states,
@@ -199,7 +200,7 @@ def initial_guess_po(
 
 def main(args):
     """
-    Main optimization routine for finding periodic orbits.
+    Main optimization routine for finding Unstable Periodic Orbits (UPOs).
     
     Args:
         args: Command-line arguments
@@ -220,31 +221,9 @@ def main(args):
     # Note about constraint
     print(f"Note: T = {t_min} * exp(logT) ensures T > {t_min}")
     
-    # Optional: Pre-optimization with Adam
-    if not args.skip_adam:
-        print("\nPre-optimization with Adam...")
-        u_vec = u_init.clone().detach().requires_grad_(True)
-        adam = torch.optim.Adam([u_vec], lr=1e-2)
-        
-        for i in range(2000):
-            adam.zero_grad()
-            loss = cost(u_vec, lambda_=args.lambda_, t_min=1.0)
-            loss.backward()
-            adam.step()
-            
-            if i % 100 == 0:  # Reduced frequency for cleaner output
-                with torch.no_grad():
-                    pos = u_vec[:3]
-                    logT = u_vec[3]
-                    # Compute actual T value
-                    T_actual = t_min * torch.exp(logT)
-                    residual = flow_map(pos, logT, t_min=t_min) - pos
-                    residual_norm = residual.norm()
-                print(f"Adam step {i}: cost={loss:.6e}, residual_norm={residual_norm:.6e}, "
-                      f"T={T_actual:.6f}, x0={pos[0]:.6f}, y0={pos[1]:.6f}, z0={pos[2]:.6f}")
-    else:
-        print("\nSkipping Adam pre-optimization (--skip-adam flag set)")
-        u_vec = u_init.clone().detach().requires_grad_(True)
+    # Proceed directly to L-BFGS optimization
+    print("\nStarting L-BFGS optimization...")
+    u_vec = u_init.clone().detach().requires_grad_(True)
     
     # Main optimization with L-BFGS
     print("\nMain optimization with L-BFGS...")
@@ -348,12 +327,12 @@ def main(args):
         ax.plot(attractor_traj[1000:, 0], attractor_traj[1000:, 1], attractor_traj[1000:, 2], 
                 'gray', alpha=0.4, linewidth=0.8, label='Lorenz attractor')
         
-        # Plot periodic orbit (in red, one period only)
+        # Plot unstable periodic orbit (in red, one period only)
         t_po = torch.linspace(0, T_final.item(), 500)
         po_traj = odeint(lorenz_rhs, pos_final, t_po, method='dopri5',
                          rtol=args.rtol, atol=args.atol).detach().numpy()
         ax.plot(po_traj[:, 0], po_traj[:, 1], po_traj[:, 2], 'red', 
-                linewidth=3, label=f'Periodic orbit (T={T_final:.6f})')
+                linewidth=3, label=f'Unstable Periodic Orbit (T={T_final:.6f})')
         
         # Mark the initial point
         ax.scatter(*pos_final.detach().numpy(), color='red', s=100, marker='o', 
@@ -362,15 +341,15 @@ def main(args):
         ax.set_xlabel('X', fontsize=12)
         ax.set_ylabel('Y', fontsize=12)
         ax.set_zlabel('Z', fontsize=12)
-        ax.set_title('Lorenz System: Periodic Orbit on Strange Attractor', fontsize=14)
+        ax.set_title('Lorenz System: Unstable Periodic Orbit (UPO) on Strange Attractor', fontsize=14)
         ax.legend(fontsize=11)
         
         # Adjust viewing angle for better visualization
         ax.view_init(elev=20, azim=45)
         
         plt.tight_layout()
-        plt.savefig('lorenz_periodic_orbit.png', dpi=150, bbox_inches='tight')
-        print("Plot saved as 'lorenz_periodic_orbit.png'")
+        plt.savefig('images/lorenz_periodic_orbit.png', dpi=150, bbox_inches='tight')
+        print("Plot saved as 'images/lorenz_periodic_orbit.png'")
     except ImportError:
         print("\nMatplotlib not available; skipping plot")
     
@@ -389,7 +368,7 @@ def main(args):
     print("="*50)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Find periodic orbits of the Lorenz system')
+    parser = argparse.ArgumentParser(description='Find Unstable Periodic Orbits (UPOs) of the Lorenz system')
     parser.add_argument('--rtol', type=float, default=DEFAULT_RTOL,
                         help='Relative tolerance for ODE solver')
     parser.add_argument('--atol', type=float, default=DEFAULT_ATOL,
@@ -398,8 +377,6 @@ if __name__ == '__main__':
                         help='Penalty weight for avoiding equilibria')
     parser.add_argument('--max-iter', type=int, default=DEFAULT_MAX_ITER,
                         help='Maximum number of L-BFGS iterations')
-    parser.add_argument('--skip-adam', action='store_true',
-                        help='Skip Adam pre-optimization and go directly to L-BFGS')
     
     args = parser.parse_args()
     
@@ -413,18 +390,18 @@ if __name__ == '__main__':
 """
 Usage: python lorenz_periodic_orbit.py [options]
 
-This script finds periodic orbits of the Lorenz system by minimizing a differentiable
+This script finds Unstable Periodic Orbits (UPOs) of the Lorenz system by minimizing a differentiable
 cost function using automatic differentiation.
 
 Options:
-  --rtol        Relative tolerance for ODE integration (default: 1e-9)
-  --atol        Absolute tolerance for ODE integration (default: 1e-9)
-  --lambda      Penalty weight for avoiding equilibria (default: 1e-3)
-  --max-iter    Maximum L-BFGS iterations (default: 300)
+  --rtol        Relative tolerance for ODE integration (default: DEFAULT_RTOL=1e-9)
+  --atol        Absolute tolerance for ODE integration (default: DEFAULT_ATOL=1e-9)
+  --lambda      Penalty weight for avoiding equilibria (default: DEFAULT_LAMBDA=1e-3)
+  --max-iter    Maximum L-BFGS iterations (default: DEFAULT_MAX_ITER=300)
 
 Example:
   python lorenz_periodic_orbit.py --lambda 0.001 --max-iter 500
 
 The initial_guess_po() function uses k-d tree nearest neighbor search to find
-good initial guesses for periodic orbits.
+good initial guesses for Unstable Periodic Orbits (UPOs).
 """
