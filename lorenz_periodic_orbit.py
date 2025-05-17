@@ -145,6 +145,12 @@ def lorenz_rhs(t, state):
     
     return torch.stack([dx, dy, dz])  # Return derivatives as a PyTorch tensor
 
+# --- torch.compile for PyTorch 2.0+ ---
+import torch
+USE_COMPILE = hasattr(torch, 'compile')
+if USE_COMPILE:
+    lorenz_rhs = torch.compile(lorenz_rhs, mode='max-autotune')
+
 def flow_map(x0_vec, T):
     """
     Compute the time-T flow map of the Lorenz system.
@@ -205,21 +211,16 @@ def cost(u_vec, lambda_=DEFAULT_LAMBDA, eps=DEFAULT_EPS, t_min=0.0):
     # This measures how close the trajectory comes back to its starting point
     periodicity_residual = torch.sum((xT - x0_vec) ** 2)
     
-    # Compute the vector field at the initial point: f(x0) = [dx/dt, dy/dt, dz/dt] at t=0
-    # This is used to avoid convergence to equilibrium points
-    f_x0 = lorenz_rhs(None, x0_vec)  # None for time since system is autonomous
-    f_norm_sq = torch.sum(f_x0 ** 2)  # Squared L2 norm of the vector field
+    # Penalty term to avoid equilibria: lambda_ / (||f(x0)||^2 + eps)
+    f_x0 = lorenz_rhs(0.0, x0_vec)
+    penalty = lambda_ / (torch.sum(f_x0 ** 2) + eps)
     
-    # Penalty term to avoid trivial solutions (equilibrium points)
-    # As f(x0) → 0 (approaching equilibrium), penalty → λ/ε
-    # For non-equilibrium points, penalty ≈ λ/||f(x0)||²
-    penalty = lambda_ / (f_norm_sq + eps)
-    
-    # Total cost combines periodicity condition and equilibrium avoidance
-    # The optimizer will try to minimize this total cost
+    # Total cost
     total_cost = periodicity_residual + penalty
-    
     return total_cost  # Return the total cost to be minimized
+
+# Do NOT compile cost with torch.compile, as it may call ODE solvers or code with dynamic shapes.
+# Only compile lorenz_rhs (already done above).
 
 def initial_guess_po(
     T_final=2000.0,
