@@ -44,7 +44,6 @@ import torch
 import numpy as np
 from torchdiffeq import odeint
 from scipy.spatial import cKDTree
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 # =============================================================================
@@ -146,7 +145,6 @@ def lorenz_rhs(t, state):
     return torch.stack([dx, dy, dz])  # Return derivatives as a PyTorch tensor
 
 # --- torch.compile for PyTorch 2.0+ ---
-import torch
 USE_COMPILE = hasattr(torch, 'compile')
 if USE_COMPILE:
     lorenz_rhs = torch.compile(lorenz_rhs, mode='max-autotune')
@@ -265,7 +263,7 @@ def initial_guess_po(
         print("No random seed provided - using system entropy")
 
     # Generate random initial condition within specified bounds
-    print(f"\nGenerating trajectory with random initial condition in bounds:")
+    print("\nGenerating trajectory with random initial condition in bounds:")
     print(f"  x ∈ [{x_bounds[0]}, {x_bounds[1]}], y ∈ [{y_bounds[0]}, {y_bounds[1]}], z ∈ [{z_bounds[0]}, {z_bounds[1]}]")
     x0_rand = np.random.uniform(*x_bounds)
     y0_rand = np.random.uniform(*y_bounds)
@@ -543,7 +541,7 @@ def main(args):
             # Early stopping if no improvement for 50 consecutive iterations
             # This prevents wasting computation when progress has stalled
             if iteration - best_iter > 50 and iteration > 100 and not converged:
-                print(f"\nEarly stopping: No improvement for 50 iterations")
+                print("\nEarly stopping: No improvement for 50 iterations")
                 converged = True
             
             # Update tracking variables for next iteration
@@ -607,8 +605,8 @@ def main(args):
         if not converged:
             with torch.no_grad():
                 # Get current state and period
-                current_pos = u_vec[:3]  # Current position in state space [x, y, z]
-                current_T = t_min + torch.exp(u_vec[3]).item()  # Current period estimate
+                _ = u_vec[:3]  # Current position in state space [x, y, z]
+                _ = t_min + torch.exp(u_vec[3]).item()  # Current period estimate
                 
                 # Compute current cost
                 current_cost = cost(u_vec, lambda_=args.lambda_, t_min=t_min).item()
@@ -671,8 +669,7 @@ def main(args):
     with torch.no_grad():
         # Integrate the system for one period starting from final_pos
         xT = flow_map(final_pos, torch.tensor(final_T))
-        # Calculate the residual (difference between initial and final states)
-        residual = (xT - final_pos).norm().item()
+        # The residual norm is already calculated and stored in final_residual
         print(f"Final residual norm: {final_residual:.6e}")
     
     # ======================================================================
@@ -794,7 +791,6 @@ def main(args):
     try:
         # Import required plotting libraries
         import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D  # Required for 3D plotting
         
         # ==================================================================
         # 3D PLOT: LORENZ ATTRACTOR AND PERIODIC ORBIT
