@@ -1,0 +1,60 @@
+# Dr. Denys Dutykh (Mathematics Department, Khalifa University of Science and Technology, Abu Dhabi, UAE)
+cff-version: 1.2.0
+message: "If you use this script, please cite this software as given below."
+title: "LorenzUPOs: unstable periodic orbits of the Lorenz system by automatic differentiation"
+type: software
+authors:
+  - family-names: Dutykh
+    given-names: Denys
+    affiliation: "Khalifa University of Science and Technology"
+    orcid: "https://orcid.org/0000-0001-5247-2788"
+repository-code: "https://github.com/dutykh/LorenzUPOs"
+license: LGPL-3.0-only
+version: 1.0.0
+date-released: "2026-11-15"
+keywords:
+  - lorenz-system
+  - unstable-periodic-orbits
+  - periodic-orbits
+  - chaos
+  - dynamical-systems
+  - nonlinear-dynamics
+  - automatic-differentiation
+  - optimization
+  - l-bfgs
+  - pytorch
+  - python
+  - research-code
+abstract: >-
+  Python script that finds unstable periodic orbits of the Lorenz system. A close return of a long chaotic trajectory,
+  found with a k-d tree, gives the first guess; the squared distance between the initial point and its image after one
+  period, plus a penalty that keeps away from the equilibria, is then minimised over the initial point and the period
+  by L-BFGS, with exact gradients from the automatic differentiation of PyTorch through the DOPRI5 integrator of
+  torchdiffeq, and the orbit is checked over three periods and plotted on the attractor.
+references:
+  - type: article
+    title: Deterministic Nonperiodic Flow
+    authors:
+      - family-names: Lorenz
+        given-names: Edward N.
+    journal: Journal of the Atmospheric Sciences
+    volume: 20
+    issue: "2"
+    start: 130
+    end: 141
+    year: 1963
+    url: "https://doi.org/10.1175/1520-0469(1963)020%3C0130:DNF%3E2.0.CO;2"
+  - type: article
+    title: A Family of Embedded Runge-Kutta Formulae
+    authors:
+      - family-names: Dormand
+        given-names: J. R.
+      - family-names: Prince
+        given-names: P. J.
+    journal: Journal of Computational and Applied Mathematics
+    volume: 6
+    issue: "1"
+    start: 19
+    end: 26
+    year: 1980
+    doi: 10.1016/0771-050x(80)90013-3

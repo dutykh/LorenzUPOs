@@ -1,147 +1,61 @@
-# Lorenz System: Unstable Periodic Orbit (UPO) Finder
+<!-- Author: Dr. Denys Dutykh (Mathematics Department, Khalifa University of Science and Technology, Abu Dhabi, UAE) -->
 
-## Author & License
+# LorenzUPOs: unstable periodic orbits of the Lorenz system by automatic differentiation
 
-**Author**: Dr. Denys Dutykh, Khalifa University of Science and Technology, Abu Dhabi, UAE  
-**Date**: May 16, 2025  
-**License**: GNU Lesser General Public License v3.0 (LGPL-3.0)
+![An unstable periodic orbit of period 3.084277, in red, on the Lorenz attractor, in grey](images/lorenz_periodic_orbit.png)
 
-## Overview
+An unstable periodic orbit found by the script (in red), of period T = 3.084277, drawn on the Lorenz attractor (in
+grey) for σ = 10, ρ = 28 and β = 8/3; the red dot is its initial point. The orbit winds twice around each wing of the
+attractor. Its optimisation took 16 iterations of L-BFGS and ended with a periodicity residual below 10⁻⁶
+(`images/lorenz_periodic_orbit_history.png`).
 
-This Python script locates Unstable Periodic Orbits (UPOs) in the Lorenz system, a paradigmatic model of chaotic dynamics, using numerical optimization and automatic differentiation. UPOs are critical as they form the "skeleton" of chaotic attractors, providing insight into the structure of chaos. The script combines advanced computational techniques with robust mathematical formulations to achieve this goal.
+LorenzUPOs is a Python script that finds unstable periodic orbits of the Lorenz system, the periodic solutions that
+form the skeleton of its chaotic attractor. It takes the closest return of a long chaotic trajectory as a first
+guess, then minimises a differentiable measure of non-periodicity over the initial point and the period with the
+L-BFGS method, the gradients being computed exactly by the automatic differentiation of PyTorch through the DOPRI5
+integrator of torchdiffeq, and finally checks the orbit over three periods and plots it.
 
-### Key Features
+## The problem
 
-- **Initial Guess Generation**: Uses a k-d tree for nearest neighbor search to find close returns in a chaotic trajectory.
-- **Numerical Optimization**: Minimizes a differentiable cost function using the L-BFGS algorithm.
-- **Automatic Differentiation**: Leverages PyTorch's autograd for exact gradient computation.
-- **Numerical Integration**: Utilizes the DOPRI5 (Dormand-Prince) ODE solver with strict tolerances.
-- **Visualization**: Generates 3D plots of the UPO and optimization history.
+The Lorenz system, with the classical parameters of its chaotic regime,
 
-### Example Output
-
-Below is a visualization of a periodic orbit found by the code, shown in red against the background of the Lorenz attractor:
-
-![Lorenz System: Unstable Periodic Orbit](images/lorenz_periodic_orbit.png)
-
-The plot shows the three-dimensional trajectory of the periodic solution (in red) embedded within the chaotic attractor (in gray). The initial point is marked with a red dot.
-
-## Algorithm Description
-
-### 1. Initial Guess Generation
-
-- **Trajectory Generation**: Integrates the Lorenz system over a long time (T_final=2000) with many steps (n_steps=400000) from a random initial condition within specified bounds.
-- **Nearest Neighbor Search**: Constructs a k-d tree from the trajectory to efficiently find pairs of points that are close in phase space (small Euclidean distance) but separated by a time within a specified range (t_min=4.0 to t_max=8.0).
-- **Selection**: Identifies the pair with the smallest distance as the initial guess, providing an estimated period (T₀) and initial state ((x₀, y₀, z₀)).
-
-This leverages the recurrence property of chaotic systems, where trajectories revisit neighborhoods in phase space, hinting at periodic behavior.
-
-### 2. Cost Function Definition
-
-The optimization problem is formulated as minimizing a cost function:
-
-- **Periodicity Residual**: |φ(T, x₀) - x₀|², where φ(T, x₀) is the state after integrating from x₀ for time T. This measures how close the trajectory returns to its starting point.
-- **Penalty Term**: λ/(|f(x₀)|² + ε), where f(x₀) is the Lorenz vector field at x₀, λ = 10⁻³ is a penalty weight, and ε = 10⁻¹² ensures numerical stability. This term prevents convergence to equilibrium points (where f(x₀) = 0).
-
-The period T is parameterized as T = t_min + e^(log T) (with t_min = 1.0), transforming the constrained problem (T > t_min) into an unconstrained one.
-
-### 3. Optimization
-
-- **Setup**: Initializes the parameter vector u = [x₀, y₀, z₀, log T] with gradients enabled.
-- **L-BFGS**: Uses the Limited-memory Broyden–Fletcher–Goldfarb–Shanno algorithm to minimize the cost function, adjusting u iteratively. The optimizer uses PyTorch's automatic differentiation for gradients.
-- **Convergence**: Monitors cost, residual norm, and gradient norm, stopping when the relative cost change is below a tolerance (tol=1e-6) or after a maximum number of iterations (max_iter=500).
-
-### 4. Verification
-
-- Integrates the optimized solution over multiple periods (e.g., 3T) to check how closely it returns to the initial state, computing error norms at T, 2T, and 3T.
-
-### 5. Visualization
-
-- **3D Plot**: Displays the UPO in red against a gray Lorenz attractor background.
-- **History Plot**: Shows optimization metrics (cost, residual norm, period, gradient norm) over iterations.
-
-## Underlying Methods and Ideas
-
-### Lorenz System
-
-The Lorenz system is defined by:
-
-```
-dx/dt = σ(y - x)
-dy/dt = x(ρ - z) - y
-dz/dt = xy - βz
+```text
+dx/dt = σ (y − x),     dy/dt = x (ρ − z) − y,     dz/dt = x y − β z,     σ = 10,  ρ = 28,  β = 8/3,
 ```
 
-with parameters σ = 10, ρ = 28, β = 8/3, producing the iconic butterfly-shaped chaotic attractor.
+is written `dX/dt = f(X)` with `X = (x, y, z)`, and `φ(T, X₀)` denotes the state reached from `X₀` after a time
+`T`. A periodic orbit of period `T` is a zero of `φ(T, X₀) − X₀` at a point where `f(X₀) ≠ 0`. The script minimises
 
-### Unstable Periodic Orbits (UPOs)
+```text
+J(X₀, s) = |φ(T, X₀) − X₀|² + λ / (|f(X₀)|² + ε),     T = t_min + exp(s),
+```
 
-UPOs are periodic solutions embedded in chaotic attractors, unstable due to positive Lyapunov exponents. They densely populate the attractor, organizing its dynamics. Finding UPOs numerically is challenging due to their instability, requiring precise methods.
+over the initial point `X₀` and the unconstrained variable `s = log(T − t_min)`, with `λ = 10⁻³`, `ε = 10⁻¹²` and
+`t_min = 1`. The first term measures how far the trajectory is from closing up after one period; the second grows
+near the three equilibria, where `f(X₀) = 0`, and keeps the minimiser away from them.
 
-### Automatic Differentiation
+## Method
 
-Automatic differentiation (AD) computes exact derivatives of functions defined by code, unlike numerical differentiation (prone to errors) or symbolic differentiation (computationally intensive). PyTorch's autograd tracks operations on tensors, applying the chain rule to compute gradients of the cost function with respect to u, enabling efficient optimization.
+The first guess comes from a trajectory integrated over a time of 2000, sampled at 400 000 points, from a random
+initial condition in the box `[−20, 20] × [−30, 30] × [0, 50]`. A k-d tree (`scipy.spatial.cKDTree`) finds, among
+the pairs of points of this trajectory separated in time by 4 to 8, the pair closest in phase space, which gives a
+first period `T₀` and a first initial point: a chaotic trajectory keeps returning near its earlier states, and a close
+return suggests a periodic orbit nearby.
 
-### L-BFGS Optimization
+The cost `J` is then minimised by `torch.optim.LBFGS`, a limited-memory quasi-Newton method, with a history of 25
+updates and a strong Wolfe line search. Its gradient with respect to `(X₀, s)` is computed by the automatic
+differentiation of PyTorch through the integrator, so that no derivative is approximated by finite differences. The
+minimisation stops when the cost changes by less than the tolerance `tol` relative to `1 + |J|`, or after `max_iter`
+iterations. Every integration uses the adaptive DOPRI5 scheme of Dormand and Prince, of order five, in double
+precision with the tolerances `rtol = atol = 10⁻⁹`, since a chaotic flow amplifies every error.
 
-The L-BFGS algorithm is a quasi-Newton method that approximates the Hessian matrix using limited memory (history size = 25 in the script). It excels in smooth, high-dimensional optimization problems, balancing computational efficiency and convergence speed. Here, it minimizes the cost function, guided by exact gradients from AD.
+The optimised orbit is finally integrated over three periods, and the distance to its initial point is printed at
+`T`, `2T` and `3T`. Two figures show the orbit on the attractor and the history of the cost, the periodicity
+residual, the period and the norm of the gradient. The initial condition of the first trajectory is random, so the
+orbit found changes from one run to the next; setting `REPRODUCIBLE = True` at the top of the script fixes the seed
+(`SEED = 1`).
 
-### Numerical Integration
-
-The DOPRI5 solver, a 5th-order Runge-Kutta method with adaptive step-sizing (Dormand-Prince), integrates the ODEs. Strict tolerances (rtol=1e-9, atol=1e-9) ensure high accuracy in computing φ(T, x₀), critical for gradient calculations and periodicity assessment.
-
-### Equilibrium Avoidance
-
-The penalty term λ/(|f(x₀)|² + ε) increases the cost near equilibria, where |f(x₀)| ≈ 0, steering the optimizer toward periodic solutions.
-
-## Libraries Used
-
-### PyTorch
-
-- **Role**: Core library for tensor operations and automatic differentiation.
-- **Key Features**:
-  - **Autograd**: Computes gradients automatically, central to the optimization process.
-  - **torchdiffeq**: Provides odeint for ODE integration, interfacing DOPRI5 with PyTorch tensors.
-- **Why Used**: Enables seamless integration of numerical integration and optimization with gradient tracking.
-
-### NumPy
-
-- **Role**: Handles array operations, particularly in initial guess generation.
-- **Key Features**: Fast numerical computations and interfacing with SciPy.
-
-### SciPy
-
-- **Role**: Provides cKDTree for efficient nearest neighbor searches.
-- **Key Features**: Accelerates the initial guess phase by quickly identifying close points in the trajectory.
-
-### Matplotlib
-
-- **Role**: Generates visualizations (3D orbit and optimization history).
-- **Key Features**: Flexible plotting capabilities for scientific data.
-
-## Background Information
-
-### Chaotic Dynamics
-
-Chaotic systems exhibit sensitivity to initial conditions and aperiodic behavior, yet UPOs provide a structured framework within the chaos. The Lorenz system, introduced by Edward Lorenz in 1963, is a foundational example.
-
-### Optimization Theory
-
-Gradient-based optimization, like L-BFGS, relies on the smoothness of the objective function. The script's use of AD ensures accurate gradients, enhancing convergence reliability.
-
-### Numerical Analysis
-
-High-precision ODE solvers like DOPRI5 balance accuracy and efficiency, crucial for chaotic systems where small errors can amplify exponentially.
-
-## Command-Line Options
-
-- `--rtol FLOAT`: ODE solver relative tolerance (default: 1e-9)
-- `--atol FLOAT`: ODE solver absolute tolerance (default: 1e-9)
-- `--lambda FLOAT`: Penalty weight (default: 1e-3)
-- `--max-iter INT`: Maximum L-BFGS iterations (default: 500)
-- `--tol FLOAT`: Optimization convergence tolerance (default: 1e-6)
-
-## Example Usage
+## Quick start
 
 ```bash
 # Default run
@@ -154,22 +68,65 @@ python lorenz_periodic_orbit.py --lambda 0.001 --max-iter 1000 --tol 1e-7
 python lorenz_periodic_orbit.py --rtol 1e-10 --atol 1e-10
 ```
 
-## Output
+| Option | Meaning | Default |
+|---|---|---|
+| `--rtol FLOAT` | relative tolerance of the ODE solver | 1e-9 |
+| `--atol FLOAT` | absolute tolerance of the ODE solver | 1e-9 |
+| `--lambda FLOAT` | weight λ of the penalty | 1e-3 |
+| `--max-iter INT` | maximum number of L-BFGS iterations | 500 |
+| `--tol FLOAT` | relative change of the cost that stops the optimisation | 1e-6 |
 
-- **Files**: Saves lorenz_periodic_orbit.png (3D plot) and lorenz_periodic_orbit_history.png (optimization history) in the images/ directory.
-- **Console**: Prints convergence details, verification results, and final orbit parameters.
+The script prints the progress of the integration and of the optimisation, the errors at `T`, `2T` and `3T`, and
+the final orbit. It saves the orbit as `images/lorenz_periodic_orbit.png` and the history as
+`images/lorenz_periodic_orbit_history.png`; when these names are already taken, it appends the first free number
+(`_1`, `_2`, ...), so that earlier results are never overwritten.
+
+## Contents
+
+| File | What it holds |
+|---|---|
+| `lorenz_periodic_orbit.py` | the script |
+| `images/lorenz_periodic_orbit.png`, `images/lorenz_periodic_orbit_history.png` | a first run: the orbit of period 3.084277 shown at the top of this page, and the history of its optimisation |
+| `images/lorenz_periodic_orbit_1.png`, `images/lorenz_periodic_orbit_history_1.png` | a second run, from another random first guess: an orbit of period 4.417766, which winds four times around one wing and once around the other |
+| `LICENSE`, `LGPL-3.0.txt` | the GNU Lesser General Public License, version 3 (the same text in both files) |
+| `CITATION.cff` | the citation of the software |
 
 ## Requirements
 
-- Python 3.6+
-- PyTorch
-- torchdiffeq
-- NumPy
-- SciPy
-- Matplotlib (for visualization)
+Python 3.8 or later, with PyTorch, torchdiffeq, NumPy, SciPy, Matplotlib and tqdm (the progress bar of the long
+integration). From PyTorch 2.0 on, the right-hand side of the Lorenz system is compiled with `torch.compile`;
+earlier versions run it uncompiled.
 
 ## References
 
-- Lorenz, E. N. (1963). "Deterministic Nonperiodic Flow." Journal of the Atmospheric Sciences, 20(2), 130-141.
-- Viswanath, D. (2003). "The Fractal Property of the Lorenz Attractor." Physica D: Nonlinear Phenomena, 190(1-2), 115-128.
-- Broyden, C. G., et al. (1970). "The Convergence of a Class of Double-rank Minimization Algorithms." Journal of the Institute of Mathematics and Its Applications.
+E. N. Lorenz, Deterministic nonperiodic flow, Journal of the Atmospheric Sciences 20, 130–141 (1963).
+
+https://doi.org/10.1175/1520-0469(1963)020%3C0130:DNF%3E2.0.CO;2
+
+J. R. Dormand and P. J. Prince, A family of embedded Runge–Kutta formulae, Journal of Computational and Applied
+Mathematics 6, 19–26 (1980).
+
+https://doi.org/10.1016/0771-050x(80)90013-3
+
+## How to cite
+
+No article accompanies this script. If you use it, please cite the software:
+
+D. Dutykh, LorenzUPOs: unstable periodic orbits of the Lorenz system by automatic differentiation, software,
+version 1.0.0 (2026).
+
+https://github.com/dutykh/LorenzUPOs
+
+The button "Cite this repository" in the right-hand column of this page gives the same reference, read from
+`CITATION.cff`.
+
+## Licence
+
+GNU Lesser General Public License, version 3 (see `LICENSE`; the same text is kept in `LGPL-3.0.txt`).
+
+## Author
+
+Denys Dutykh (Mathematics Department, Khalifa University of Science and Technology, Abu Dhabi, UAE), who wrote the
+script in May 2025.
+
+https://www.denys-dutykh.com/
