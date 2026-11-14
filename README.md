@@ -42,7 +42,8 @@ the pairs of points of this trajectory separated in time by 4 to 8, the pair clo
 first period `T₀` and a first initial point: a chaotic trajectory keeps returning near its earlier states, and a close
 return suggests a periodic orbit nearby.
 
-The cost `J` is then minimised by `torch.optim.LBFGS`, a limited-memory quasi-Newton method, with a history of 25
+The cost `J` is then minimised by `torch.optim.LBFGS`, the limited-memory quasi-Newton method of Liu and Nocedal
+(1989), with a history of 25
 updates and a strong Wolfe line search. Its gradient with respect to `(X₀, s)` is computed by the automatic
 differentiation of PyTorch through the integrator, so that no derivative is approximated by finite differences. The
 minimisation stops when the cost changes by less than the tolerance `tol` relative to `1 + |J|`, or after `max_iter`
@@ -107,6 +108,15 @@ J. R. Dormand and P. J. Prince, A family of embedded Runge–Kutta formulae, Jou
 Mathematics 6, 19–26 (1980).
 
 https://doi.org/10.1016/0771-050x(80)90013-3
+
+D. C. Liu and J. Nocedal, On the limited memory BFGS method for large scale optimization, Mathematical Programming 45,
+503–528 (1989).
+
+https://doi.org/10.1007/BF01589116
+
+D. Viswanath, The fractal property of the Lorenz attractor, Physica D: Nonlinear Phenomena 190, 115–128 (2004).
+
+https://doi.org/10.1016/j.physd.2003.10.006
 
 ## How to cite
 
